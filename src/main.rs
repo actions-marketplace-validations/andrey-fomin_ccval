@@ -47,7 +47,7 @@ fn main() {
             process::exit(EXIT_OK);
         }
         Err(AppError::Config(error)) => {
-            eprintln!("Error parsing conventional-commits.yaml: {}", error);
+            eprintln!("Config error: {}", error);
             process::exit(EXIT_CONFIG_ERROR);
         }
         Err(AppError::Git(error)) => {
