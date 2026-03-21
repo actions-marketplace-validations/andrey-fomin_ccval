@@ -8,9 +8,17 @@ pub enum ConfigError {
     #[error("unknown preset '{0}'")]
     UnknownPreset(String),
     #[error("failed to read config '{path}': {error}")]
-    ReadFailed { path: String, error: std::io::Error },
-    #[error("{0}")]
-    InvalidYaml(#[from] serde_yaml::Error),
+    ReadFailed {
+        path: String,
+        #[source]
+        error: std::io::Error,
+    },
+    #[error("failed to parse config '{path}': {error}")]
+    ParseFailed {
+        path: String,
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -120,11 +128,38 @@ impl Config {
         config
     }
 
-    fn read_config_str(path: &str) -> Result<String, ConfigError> {
+    fn read_config_str(path: impl AsRef<Path>) -> Result<String, ConfigError> {
+        let path = path.as_ref();
         std::fs::read_to_string(path).map_err(|error| ConfigError::ReadFailed {
-            path: path.to_string(),
+            path: path.to_string_lossy().into_owned(),
             error,
         })
+    }
+
+    fn parse_config_str(path: impl AsRef<Path>, config_str: &str) -> Result<Config, ConfigError> {
+        let path = path.as_ref();
+        let path_string = path.to_string_lossy().into_owned();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+
+        match extension.as_deref() {
+            Some("toml") => toml::from_str(config_str).map_err(|error| ConfigError::ParseFailed {
+                path: path_string,
+                error: Box::new(error),
+            }),
+            Some("json") => {
+                serde_json::from_str(config_str).map_err(|error| ConfigError::ParseFailed {
+                    path: path_string,
+                    error: Box::new(error),
+                })
+            }
+            _ => serde_yaml::from_str(config_str).map_err(|error| ConfigError::ParseFailed {
+                path: path_string,
+                error: Box::new(error),
+            }),
+        }
     }
 
     pub fn merge(base: &Config, overrides: &Config) -> Config {
@@ -178,25 +213,23 @@ impl Config {
             _ => return Err(ConfigError::UnknownPreset(preset.to_string())),
         };
 
-        Ok(serde_yaml::from_str(preset_yaml)?)
+        serde_yaml::from_str(preset_yaml).map_err(|error| ConfigError::ParseFailed {
+            path: format!("preset:{preset}"),
+            error: Box::new(error),
+        })
     }
 
-    fn load_raw_from_str(local_config_str: &str) -> Result<Config, ConfigError> {
-        Ok(serde_yaml::from_str(local_config_str)?)
+    fn load_raw_from_str(
+        path: impl AsRef<Path>,
+        local_config_str: &str,
+    ) -> Result<Config, ConfigError> {
+        Self::parse_config_str(path, local_config_str)
     }
 
-    fn load_raw_default_path_if_exists(path: &str) -> Result<Config, ConfigError> {
-        if !Path::new(path).exists() {
-            return Ok(Self::empty());
-        }
-
+    fn load_raw_from_path(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
+        let path = path.as_ref();
         let local_config_str = Self::read_config_str(path)?;
-        Self::load_raw_from_str(&local_config_str)
-    }
-
-    fn load_raw_from_path(path: &str) -> Result<Config, ConfigError> {
-        let local_config_str = Self::read_config_str(path)?;
-        Self::load_raw_from_str(&local_config_str)
+        Self::load_raw_from_str(path, &local_config_str)
     }
 
     fn apply_preset(local_config: Config, preset: Option<&str>) -> Result<Config, ConfigError> {
@@ -222,10 +255,55 @@ impl Config {
     ) -> Result<Config, ConfigError> {
         let local_config = match config_path {
             Some(path) => Self::load_raw_from_path(path)?,
-            None => Self::load_raw_default_path_if_exists("conventional-commits.yaml")?,
+            None => Self::load_auto_discovered_config_in(Path::new("."))?,
         };
 
         Self::apply_preset(local_config, preset)
+    }
+
+    fn load_auto_discovered_config_in(base_dir: &Path) -> Result<Config, ConfigError> {
+        let candidate_paths = [
+            "conventional-commits.yaml",
+            "conventional-commits.yml",
+            "conventional-commits.toml",
+            "conventional-commits.json",
+        ];
+
+        for path in candidate_paths {
+            let full_path = base_dir.join(path);
+            match full_path.try_exists() {
+                Ok(true) => match full_path.metadata() {
+                    Ok(metadata) => {
+                        if metadata.is_file() {
+                            return Self::load_raw_from_path(&full_path);
+                        }
+
+                        return Err(ConfigError::ReadFailed {
+                            path: full_path.to_string_lossy().into_owned(),
+                            error: std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "config path exists but is not a regular file",
+                            ),
+                        });
+                    }
+                    Err(error) => {
+                        return Err(ConfigError::ReadFailed {
+                            path: full_path.to_string_lossy().into_owned(),
+                            error,
+                        });
+                    }
+                },
+                Ok(false) => continue,
+                Err(error) => {
+                    return Err(ConfigError::ReadFailed {
+                        path: full_path.to_string_lossy().into_owned(),
+                        error,
+                    });
+                }
+            }
+        }
+
+        Ok(Self::empty())
     }
 }
 
@@ -249,8 +327,11 @@ mod tests {
 message:
   max-length: 1000
 ";
-        let config =
-            Config::apply_preset(Config::load_raw_from_str(custom_yaml).unwrap(), None).unwrap();
+        let config = Config::apply_preset(
+            Config::load_raw_from_str("config.yaml", custom_yaml).unwrap(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(config.message.as_ref().unwrap().max_length, Some(1000));
         assert_eq!(config.message.as_ref().unwrap().max_line_length, None);
@@ -262,7 +343,10 @@ message:
         let custom_yaml = "
 preset: unsupported
 ";
-        let result = Config::apply_preset(Config::load_raw_from_str(custom_yaml).unwrap(), None);
+        let result = Config::apply_preset(
+            Config::load_raw_from_str("config.yaml", custom_yaml).unwrap(),
+            None,
+        );
         assert!(
             matches!(result, Err(ConfigError::UnknownPreset(preset)) if preset == "unsupported")
         );
@@ -304,7 +388,7 @@ type:
 header:
   max-length: not_a_number
 ";
-        let result = Config::load_raw_from_str(invalid_yaml);
+        let result = Config::load_raw_from_str("config.yaml", invalid_yaml);
         assert!(result.is_err());
     }
 
@@ -314,7 +398,7 @@ header:
 header:
   unknown: true
 ";
-        let result = Config::load_raw_from_str(invalid_yaml);
+        let result = Config::load_raw_from_str("config.yaml", invalid_yaml);
         assert!(result.is_err());
         assert!(
             result
@@ -331,15 +415,15 @@ header:
   regexes:
     - "(unclosed"
 "#;
-        let result = Config::load_raw_from_str(invalid_yaml);
+        let result = Config::load_raw_from_str("config.yaml", invalid_yaml);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid regex"));
     }
 
     #[test]
-    fn test_load_default_path_if_missing_returns_empty_config() {
-        let config =
-            Config::load_raw_default_path_if_exists("definitely-missing-config.yaml").unwrap();
+    fn test_auto_discovery_without_config_returns_empty_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::load_auto_discovered_config_in(temp_dir.path()).unwrap();
         assert!(config.message.is_none());
         assert!(config.header.is_none());
         assert!(config.commit_type.is_none());
@@ -348,6 +432,69 @@ header:
     #[test]
     fn test_load_from_path_requires_existing_file() {
         let result = Config::load_raw_from_path("definitely-missing-config.yaml");
+        assert!(matches!(result, Err(ConfigError::ReadFailed { .. })));
+    }
+
+    #[test]
+    fn test_load_raw_from_str_supports_toml() {
+        let config = Config::load_raw_from_str(
+            "config.toml",
+            "[message]\nmax-line-length = 72\n\n[type]\nvalues = [\"feat\", \"fix\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(config.message.as_ref().unwrap().max_line_length, Some(72));
+        assert_eq!(
+            config
+                .commit_type
+                .as_ref()
+                .unwrap()
+                .values
+                .as_ref()
+                .unwrap(),
+            &vec!["feat".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_load_raw_from_str_supports_json() {
+        let config = Config::load_raw_from_str(
+            "config.JSON",
+            r#"{"message":{"max-line-length":72},"type":{"values":["feat","fix"]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.message.as_ref().unwrap().max_line_length, Some(72));
+        assert_eq!(
+            config
+                .commit_type
+                .as_ref()
+                .unwrap()
+                .values
+                .as_ref()
+                .unwrap(),
+            &vec!["feat".to_string(), "fix".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_auto_discovery_picks_first_config_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let yaml = temp_dir.path().join("conventional-commits.yaml");
+        let toml = temp_dir.path().join("conventional-commits.toml");
+        std::fs::write(&yaml, "message:\n  max-line-length: 10\n").unwrap();
+        std::fs::write(&toml, "[message]\nmax-line-length = 20\n").unwrap();
+
+        let config = Config::load_auto_discovered_config_in(temp_dir.path()).unwrap();
+        assert_eq!(config.message.as_ref().unwrap().max_line_length, Some(10));
+    }
+
+    #[test]
+    fn test_auto_discovery_errors_on_non_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp_dir.path().join("conventional-commits.yaml")).unwrap();
+
+        let result = Config::load_auto_discovered_config_in(temp_dir.path());
         assert!(matches!(result, Err(ConfigError::ReadFailed { .. })));
     }
 

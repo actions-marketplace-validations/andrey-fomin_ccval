@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/andrey-fomin/ccval)](https://github.com/andrey-fomin/ccval/releases)
 [![Docker](https://img.shields.io/badge/docker-andreyfomin%2Fccval-blue)](https://hub.docker.com/r/andreyfomin/ccval)
 
-Validate commit messages using the Conventional Commits format with YAML configuration.
+Validate commit messages using the Conventional Commits format with YAML, TOML, or JSON local configuration files.
 
 ## Installation
 
@@ -194,7 +194,7 @@ See [`VALIDATION.md`](VALIDATION.md) for available fields, rule types, presets, 
 
 ## Configuration
 
-Configuration is defined in `conventional-commits.yaml` in your working directory.
+When `-c/--config` is not provided, configuration is auto-discovered in this order: `conventional-commits.yaml`, `conventional-commits.yml`, `conventional-commits.toml`, `conventional-commits.json`.
 
 ### Presets
 
@@ -223,6 +223,43 @@ scope:
 
 header:
   max-line-length: 50
+```
+
+YAML example:
+
+```yaml
+message:
+  max-line-length: 72
+
+type:
+  values:
+    - feat
+    - fix
+    - docs
+
+scope:
+  required: true
+  values:
+    - api
+    - core
+    - ui
+
+header:
+  max-line-length: 50
+```
+
+TOML example:
+
+```toml
+[type]
+values = ["feat", "fix", "docs"]
+
+[scope]
+required = true
+values = ["api", "core", "ui"]
+
+[header]
+max-line-length = 50
 ```
 
 ## Building from Source
