@@ -14,6 +14,12 @@ Validate commit messages using the Conventional Commits format with YAML, TOML, 
 cargo install ccval
 ```
 
+### Homebrew
+
+```bash
+brew install andrey-fomin/tap/ccval
+```
+
 ### GitHub Releases
 
 Download prebuilt binaries from [GitHub Releases](https://github.com/andrey-fomin/ccval/releases) for Linux, macOS, and Windows.
