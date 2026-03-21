@@ -4,9 +4,42 @@
 [![Release](https://img.shields.io/github/v/release/andrey-fomin/ccval)](https://github.com/andrey-fomin/ccval/releases)
 [![Docker](https://img.shields.io/badge/docker-andreyfomin%2Fccval-blue)](https://hub.docker.com/r/andreyfomin/ccval)
 
-Validate commit messages using the Conventional Commits format with YAML, TOML, or JSON local configuration files.
+Validate commit messages locally, in CI, or from stdin using Conventional Commits rules.
 
-## Installation
+`ccval` helps you:
+- catch invalid commit messages before merge or release
+- enforce team rules for types, scopes, headers, and footers
+- validate one commit, a branch range, or a message from stdin or a file
+
+## Quickstart
+
+Once `ccval` is installed, validate the last commit in the current repository:
+
+```bash
+ccval
+```
+
+Validate all commits on your branch:
+
+```bash
+ccval -- origin/main..HEAD
+```
+
+Use the built-in strict preset:
+
+```bash
+ccval -p strict
+```
+
+Validate a commit message from stdin:
+
+```bash
+printf 'feat: add validation\n' | ccval --stdin
+```
+
+## Install
+
+Choose the option that fits your workflow.
 
 ### crates.io
 
@@ -22,46 +55,172 @@ brew install andrey-fomin/tap/ccval
 
 ### GitHub Releases
 
-Download prebuilt binaries from [GitHub Releases](https://github.com/andrey-fomin/ccval/releases) for Linux, macOS, and Windows.
+Download prebuilt binaries for Linux, macOS, and Windows from [GitHub Releases](https://github.com/andrey-fomin/ccval/releases).
 
-### macOS
+### Docker
 
-On macOS, you may see a warning: "Apple could not verify 'ccval' is free of malware."
+Run `ccval` without installing it locally:
 
-To bypass Gatekeeper, run:
+```bash
+printf 'feat: add validation\n' | docker run --rm -i andreyfomin/ccval:distroless --stdin
+```
+
+Available image tags (moving convenience tags):
+
+- `andreyfomin/ccval:latest` - Alpine-based, includes Git support, about 11 MB
+- `andreyfomin/ccval:distroless` - minimal image, no Git support, about 1 MB
+
+- Use `:distroless` when you only need stdin or file validation
+- Use `:latest` when you need to validate commits from a Git repository
+
+The release workflow also publishes versioned tags, including `:1`, `:1.2`, `:1.2.3`, and matching `-distroless` variants such as `:1.2.3-distroless`.
+
+For Git-based validation in a mounted repository, use `--trust-repo` only when you control the repository and Git fails with a `detected dubious ownership` warning:
+
+```bash
+docker run --rm -v "$(pwd)":/repo -w /repo andreyfomin/ccval --trust-repo
+```
+
+### macOS note
+
+If macOS blocks a downloaded binary, remove the quarantine attribute:
 
 ```bash
 xattr -d com.apple.quarantine /path/to/ccval
 ```
 
-Alternatively, right-click the binary > Open > Open when prompted.
+You can also right-click the binary, choose Open, and confirm the prompt.
 
-### Docker
+## Common Tasks
 
-Images are available on Docker Hub: `andreyfomin/ccval`
-
-| Tag | Base | Git Support | Size |
-|-----|------|-------------|------|
-| `:latest` | Alpine | Yes | ~11 MB |
-| `:distroless` | Distroless | No | ~1 MB |
-
-Use the `:distroless` variant for smaller images when only using stdin or file mode.
-
-**Validate stdin:**
+### Validate the latest commit
 
 ```bash
-printf 'feat: new feature\n' | docker run --rm -i andreyfomin/ccval --stdin
+ccval
 ```
 
-**Validate git commits (Alpine image only):**
+### Validate a commit range
 
 ```bash
-docker run --rm -v $(pwd):/repo -w /repo andreyfomin/ccval --trust-repo
+ccval -- origin/main..HEAD
 ```
 
-### GitHub Action
+### Validate commits in another repository
 
-Use it in your workflow:
+```bash
+ccval -r /path/to/repo -- HEAD~10..HEAD
+```
+
+### Validate a message file
+
+```bash
+ccval --file .git/COMMIT_EDITMSG
+```
+
+### Validate in a container or ownership-mismatch environment
+
+```bash
+ccval -T
+```
+
+Or with an explicit repository path:
+
+```bash
+ccval -r /repo -T -- HEAD~5..HEAD
+```
+
+## Git Hook
+
+Use a `commit-msg` hook to validate each commit message before Git creates the commit.
+
+Create `.git/hooks/commit-msg` with this content:
+
+```sh
+#!/bin/sh
+
+set -eu
+
+exec ccval --file "$1"
+```
+
+Then make it executable:
+
+```bash
+chmod +x .git/hooks/commit-msg
+```
+
+This hook expects `ccval` to be installed and available on your `PATH`.
+
+## Configuration in 30 Seconds
+
+By default, if no config file is found and no preset is specified, `ccval` only checks whether the commit message is parseable as a Conventional Commit.
+
+When a config file is present or a preset is provided, `ccval` also applies the validation rules defined there so you can enforce team-specific rules.
+
+To enforce team-specific rules, add a config file such as `conventional-commits.yaml`.
+
+Minimal example:
+
+```yaml
+preset: strict
+
+type:
+  values:
+    - feat
+    - fix
+    - docs
+
+scope:
+  required: true
+```
+
+The same idea in TOML:
+
+```toml
+preset = "strict"
+
+[type]
+values = ["feat", "fix", "docs"]
+
+[scope]
+required = true
+```
+
+With this config:
+
+- `strict` enables useful default formatting rules
+- only `feat`, `fix`, and `docs` are allowed
+- every commit must include a scope such as `feat(api): add endpoint`
+
+When `--config` is not provided, `ccval` looks for these files in order:
+
+- `conventional-commits.yaml`
+- `conventional-commits.yml`
+- `conventional-commits.toml`
+- `conventional-commits.json`
+
+Use a custom config path when needed:
+
+```bash
+ccval -c .github/conventional-commits.yaml -- origin/main..HEAD
+```
+
+## Presets
+
+`ccval` includes two built-in presets:
+
+- `default` - formatting rules for description spacing and newline handling in body and footer values
+- `strict` - `default` plus header length limits and common type and scope restrictions
+
+Use a preset from the command line without changing your config file:
+
+```bash
+ccval -p strict
+```
+
+## GitHub Action
+
+Use `ccval` in GitHub Actions to validate pull request commit ranges or pushed commits.
 
 ```yaml
 on: pull_request
@@ -76,33 +235,17 @@ jobs:
       - uses: andrey-fomin/ccval@v0
 ```
 
-The action automatically:
-- Supports `push` and `pull_request` events
-- Validates all commits in a PR (uses `--no-merges`)
-- Validates pushed non-merge commits on regular pushes and full pushed histories when needed
-- Skips deleted-ref push events
-- Skips push events with zero commits
-- Discovers `conventional-commits.yaml` or `.github/conventional-commits.yaml`
-- Supports the `preset` input (`default` or `strict`)
-- Limits validation to 100 commits by default, warning and skipping larger auto-detected or custom ranges
+Common options:
 
-On push events, merge commits are skipped and the action prefers the exact pushed range from local history.
-If the pushed `before` commit is not available locally, the action falls back to the default-branch merge-base when possible and otherwise fails with a clear error.
-Deleted-ref pushes are skipped.
-Push events with zero commits are skipped.
-When validating `push` events, make sure your workflow fetches enough history (for example `actions/checkout` with `fetch-depth: 0`) so the required commit range is available.
-
-Use `@v0` to track the latest compatible `v0.x.y` release, or pin to a specific release tag like `@v0.3.1`. For a truly immutable reference, pin the action to a commit SHA instead of a tag.
-
-**Custom config:**
+Use a custom config:
 
 ```yaml
 - uses: andrey-fomin/ccval@v0
   with:
-    config: '.github/ccval.yaml'
+    config: .github/conventional-commits.yaml
 ```
 
-**Built-in preset:**
+Use a built-in preset:
 
 ```yaml
 - uses: andrey-fomin/ccval@v0
@@ -110,25 +253,49 @@ Use `@v0` to track the latest compatible `v0.x.y` release, or pin to a specific 
     preset: strict
 ```
 
-**Override git arguments:**
+Override git arguments:
 
 ```yaml
 - uses: andrey-fomin/ccval@v0
   with:
-    git-args: 'origin/main..HEAD --no-merges'
+    git-args: origin/main..HEAD --no-merges
 ```
 
-**Limit checked commits:**
+Limit checked commits:
 
 ```yaml
 - uses: andrey-fomin/ccval@v0
   with:
-    max-commits: '250'
+    max-commits: "250"
 ```
 
-## Usage
+The action supports `push` and `pull_request` events, discovers `conventional-commits.yaml` or `.github/conventional-commits.yaml`, skips merge commits in pull requests, skips deleted-ref and zero-commit pushes, and limits validation to 100 commits by default.
 
-```
+For push events, it prefers the exact pushed range from local history. If the pushed `before` commit is not available locally, it falls back to the default-branch merge-base when possible and otherwise fails with a clear error.
+
+Make sure your workflow fetches enough history, for example with `fetch-depth: 0`, so the required commit range is available.
+
+Use `@v0` to track the latest compatible `v0.x.y` release, or pin a specific release tag such as `@v0.3.1`. For a fully immutable reference, pin a commit SHA.
+
+## Parsing vs Validation
+
+`ccval` checks commit messages in two steps:
+
+1. Parse the message structure
+2. Apply validation rules from your config
+
+A message can be parseable and still fail validation.
+
+For example, `feat:  add api ` may parse successfully but fail stricter formatting rules.
+
+Read more:
+
+- [`PARSING.md`](PARSING.md) for commit message structure and parse errors
+- [`VALIDATION.md`](VALIDATION.md) for available fields, rules, and configuration examples
+
+## Command Reference
+
+```text
 Usage: ccval [-c <path>] [-p <preset>] [-r <path>] [-T] [-- <git-log-args>...]
        ccval [-c <path>] [-p <preset>] --stdin
        ccval [-c <path>] [-p <preset>] -f <path>
@@ -168,110 +335,19 @@ Examples:
   ccval -c config.yaml --stdin
 ```
 
-### Exit Codes
+## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Validation failed |
-| 2 | Parse error |
-| 3 | Config error |
-| 4 | CLI usage error |
-| 5 | I/O error |
-| 6 | Git error |
+- `0` success
+- `1` validation failed
+- `2` parse error
+- `3` config error
+- `4` CLI usage error
+- `5` I/O error
+- `6` git error
 
-## How It Works
+## Reference
 
-`ccval` works in two steps:
-
-1. It parses the commit message structure.
-2. It applies validation rules from your config.
-
-To avoid ambiguity in this document:
-
-- a message is **parseable** if its structure can be parsed
-- a message **passes validation** if the parsed fields satisfy the configured rules
-
-A commit message can be parseable and still fail validation.
-
-See [`PARSING.md`](PARSING.md) for commit message grammar and parse errors.
-
-See [`VALIDATION.md`](VALIDATION.md) for available fields, rule types, presets, and configuration examples.
-
-## Configuration
-
-When `-c/--config` is not provided, configuration is auto-discovered in this order: `conventional-commits.yaml`, `conventional-commits.yml`, `conventional-commits.toml`, `conventional-commits.json`.
-
-### Presets
-
-- `default` - formatting rules for description spacing and newline handling in body/footer values
-- `strict` - `default` plus header length limits and common type/scope restrictions
-
-Use `-p/--preset` to select a built-in preset from the command line without changing your config file.
-
-Example:
-
-```yaml
-preset: strict
-
-type:
-  values:
-    - feat
-    - fix
-    - docs
-
-scope:
-  required: true
-  values:
-    - api
-    - core
-    - ui
-
-header:
-  max-line-length: 50
-```
-
-YAML example:
-
-```yaml
-message:
-  max-line-length: 72
-
-type:
-  values:
-    - feat
-    - fix
-    - docs
-
-scope:
-  required: true
-  values:
-    - api
-    - core
-    - ui
-
-header:
-  max-line-length: 50
-```
-
-TOML example:
-
-```toml
-[type]
-values = ["feat", "fix", "docs"]
-
-[scope]
-required = true
-values = ["api", "core", "ui"]
-
-[header]
-max-line-length = 50
-```
-
-## Building from Source
-
-```bash
-cargo build --release
-```
-
-The binary will be at `./target/release/ccval`.
+- [`PARSING.md`](PARSING.md) explains the supported commit message structure
+- [`VALIDATION.md`](VALIDATION.md) lists fields, rule types, presets, and examples
+- [`CHANGELOG.md`](CHANGELOG.md) tracks release history
+- [`RELEASING.md`](RELEASING.md) documents the release process
